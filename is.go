@@ -4,16 +4,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
+	//"golang.org/x/crypto/ssh"
+	//"golang.org/x/crypto/ssh/agent"
 	"io/ioutil"
 	"log"
-	"net"
+	//"net"
 	"os"
+	"os/exec"
 	"os/user"
 	"strings"
 )
 
+/*
 func DialWithAgentForwarded(user, addr string) (*ssh.Session, error) {
 	agentConn, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
 	if err != nil {
@@ -48,6 +50,7 @@ func DialWithAgentForwarded(user, addr string) (*ssh.Session, error) {
 
 	return session, nil
 }
+*/
 
 type TransferConfig struct {
 	SrcUser string
@@ -58,6 +61,7 @@ type TransferConfig struct {
 	DstPath string
 }
 
+/*
 func Transfer(config *TransferConfig) error {
 	session, err := DialWithAgentForwarded(config.SrcUser, config.SrcAddr+":22")
 	if err != nil {
@@ -71,6 +75,39 @@ func Transfer(config *TransferConfig) error {
 		config.SrcPath, config.DstUser, config.DstAddr, config.DstPath)
 	log.Printf("Executing remote command: %s\n", cmd)
 	return session.Run(cmd)
+}
+*/
+
+func EncodeSshConfig() (string, error) {
+	usr, err := user.Current()
+	if err != nil {
+		return "", err
+	}
+	bytes, err := ioutil.ReadFile(usr.HomeDir + "/.ssh/config")
+	if err != nil {
+		return "", nil
+	}
+
+	result := ""
+	for _, line := range strings.Split(string(bytes), "\n") {
+		result += fmt.Sprintf("-o \"%s\"", line)
+	}
+	return result, nil
+}
+
+func Transfer(config *TransferConfig) error {
+	sshConfig, err := EncodeSshConfig()
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command("/bin/sh", "-xc",
+		fmt.Sprintf("ssh -A %s@%s scp -o StrictHostKeyChecking=no %s\"%s\" \"%s@%s:%s\"",
+			config.SrcUser, config.SrcAddr, sshConfig, config.SrcPath,
+			config.DstUser, config.DstAddr, config.DstPath))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 type HostConfig struct {
