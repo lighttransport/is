@@ -14,7 +14,8 @@ You have to define host configuration in ~/.isrc like this:
  "host2": {
     "User": "bob",
     "Host": "example.org",
-    "BaseDir": "/home/foobar/baz"
+    "BaseDir": "/home/foobar/baz",
+    "Through": ["example.net", "example.com"]
   }
 }
 ```

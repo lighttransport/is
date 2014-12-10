@@ -15,6 +15,16 @@ import (
 	"strings"
 )
 
+type TransferConfig struct {
+	SrcUser    string
+	SrcAddr    string
+	SrcPath    string
+	DstUser    string
+	DstAddr    string
+	DstPath    string
+	DstThrough []string
+}
+
 /*
 func DialWithAgentForwarded(user, addr string) (*ssh.Session, error) {
 	agentConn, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
@@ -50,18 +60,6 @@ func DialWithAgentForwarded(user, addr string) (*ssh.Session, error) {
 
 	return session, nil
 }
-*/
-
-type TransferConfig struct {
-	SrcUser string
-	SrcAddr string
-	SrcPath string
-	DstUser string
-	DstAddr string
-	DstPath string
-}
-
-/*
 func Transfer(config *TransferConfig) error {
 	session, err := DialWithAgentForwarded(config.SrcUser, config.SrcAddr+":22")
 	if err != nil {
@@ -78,6 +76,7 @@ func Transfer(config *TransferConfig) error {
 }
 */
 
+/*
 func EncodeSshConfig() (string, error) {
 	usr, err := user.Current()
 	if err != nil {
@@ -94,21 +93,39 @@ func EncodeSshConfig() (string, error) {
 		if trimmed == "" {
 			continue
 		}
-		result += fmt.Sprintf("-o \"%s\" ", line)
+		result += fmt.Sprintf("-o \"%s\" ", trimmed)
 	}
 	return result, nil
 }
+*/
+
+func Encode(s string) string {
+	result := ""
+	for _, c := range s {
+		if c == '\\' {
+			result += "\\\\"
+		} else if c == '"' {
+			result += "\\\""
+		} else {
+			result += string(c)
+		}
+	}
+	return result
+}
+
+func ConvertProxyCommand(through []string) string {
+	if len(through) == 0 {
+		return ""
+	} else {
+		return Encode("-o \"ProxyCommand=ssh " + ConvertProxyCommand(through[1:]) + through[0] + " nc %h %p\" ")
+	}
+}
 
 func Transfer(config *TransferConfig) error {
-	sshConfig, err := EncodeSshConfig()
-	if err != nil {
-		return err
-	}
-
-	cmd := exec.Command("/bin/sh", "-xc",
-		fmt.Sprintf("ssh -A %s@%s scp -o StrictHostKeyChecking=no %s\"%s\" \"%s@%s:%s\"",
-			config.SrcUser, config.SrcAddr, sshConfig, config.SrcPath,
-			config.DstUser, config.DstAddr, config.DstPath))
+	cmdStr := fmt.Sprintf("ssh -A %s@%s scp -o StrictHostKeyChecking=no %s\"%s\" \"%s@%s:%s\"",
+		config.SrcUser, config.SrcAddr, ConvertProxyCommand(config.DstThrough), config.SrcPath,
+		config.DstUser, config.DstAddr, config.DstPath)
+	cmd := exec.Command("/bin/sh", "-xc", cmdStr)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -118,6 +135,7 @@ type HostConfig struct {
 	User    string
 	Host    string
 	BaseDir string
+	Through []string
 }
 
 type HostConfigs map[string]HostConfig
@@ -155,7 +173,7 @@ func SplitLocation(location string) (host string, dir string, err error) {
 	return
 }
 
-func GetFullLocation(hostAlias, relPath string, configs *HostConfigs) (user string, addr string, path string, err error) {
+func GetFullLocation(hostAlias, relPath string, configs *HostConfigs) (user string, addr string, path string, through []string, err error) {
 	config, ok := (*configs)[hostAlias]
 	if !ok {
 		err = errors.New(fmt.Sprintf("invalid host name alias %s", hostAlias))
@@ -165,6 +183,7 @@ func GetFullLocation(hostAlias, relPath string, configs *HostConfigs) (user stri
 	user = config.User
 	addr = config.Host
 	path = config.BaseDir + "/" + relPath
+	through = config.Through
 	return
 }
 
@@ -180,7 +199,7 @@ func DoTransfer(argSrc, argDst string, configs *HostConfigs) error {
 	}
 
 	transferConfig := new(TransferConfig)
-	usr, addr, path, err := GetFullLocation(srcHost, src, configs)
+	usr, addr, path, _, err := GetFullLocation(srcHost, src, configs)
 	if err != nil {
 		return err
 	}
@@ -188,13 +207,14 @@ func DoTransfer(argSrc, argDst string, configs *HostConfigs) error {
 	transferConfig.SrcAddr = addr
 	transferConfig.SrcPath = path
 
-	usr, addr, path, err = GetFullLocation(dstHost, dst, configs)
+	usr, addr, path, through, err := GetFullLocation(dstHost, dst, configs)
 	if err != nil {
 		return err
 	}
 	transferConfig.DstUser = usr
 	transferConfig.DstAddr = addr
 	transferConfig.DstPath = path
+	transferConfig.DstThrough = through
 
 	err = Transfer(transferConfig)
 	if err != nil {
@@ -219,7 +239,8 @@ You have to define host configuration in ~/.isrc like this:
  "host2": {
     "User": "bob",
     "Host": "example.org",
-    "BaseDir": "/home/foobar/baz"
+    "BaseDir": "/home/foobar/baz",
+    "Through": ["example.net", "example.com"]
   }
 }
 `)
