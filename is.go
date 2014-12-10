@@ -90,7 +90,7 @@ func EncodeSshConfig() (string, error) {
 
 	result := ""
 	for _, line := range strings.Split(string(bytes), "\n") {
-		result += fmt.Sprintf("-o \"%s\"", line)
+		result += fmt.Sprintf("-o \"%s\" ", line)
 	}
 	return result, nil
 }
