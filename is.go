@@ -187,6 +187,8 @@ You have to define host configuration in ~/.isrc like this:
 
 	configs := GetHostConfigs()
 
-	DoTransfer(os.Args[1], os.Args[2], configs)
-
+	err := DoTransfer(os.Args[1], os.Args[2], configs)
+	if err != nil {
+		log.Fatalln(err)
+	}
 }
