@@ -87,7 +87,7 @@ func GetHostConfigs() *HostConfigs {
 		log.Fatalln(err)
 	}
 
-	bytes, err := ioutil.ReadFile(usr.HomeDir + "/.bigrc")
+	bytes, err := ioutil.ReadFile(usr.HomeDir + "/.isrc")
 	if err != nil {
 		log.Fatalln(err)
 	}
