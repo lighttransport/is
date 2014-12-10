@@ -90,6 +90,10 @@ func EncodeSshConfig() (string, error) {
 
 	result := ""
 	for _, line := range strings.Split(string(bytes), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
 		result += fmt.Sprintf("-o \"%s\" ", line)
 	}
 	return result, nil
