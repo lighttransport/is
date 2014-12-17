@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	//"net"
+	"flag"
 	"os"
 	"os/exec"
 	"os/user"
@@ -225,7 +226,7 @@ func DoTransfer(argSrc, argDst string, configs *HostConfigs) error {
 }
 
 func main() {
-	if len(os.Args) != 3 {
+	if len(flag.NArg()) != 2 {
 		fmt.Fprintln(os.Stderr,
 			`Usage: is srcHost:src dstHost:dst
 
@@ -249,7 +250,7 @@ You have to define host configuration in ~/.isrc like this:
 
 	configs := GetHostConfigs()
 
-	err := DoTransfer(os.Args[1], os.Args[2], configs)
+	err := DoTransfer(flag.Args()[0], flag.Args()[1], configs)
 	if err != nil {
 		log.Fatalln(err)
 	}
