@@ -9,11 +9,17 @@ import (
 	"io/ioutil"
 	"log"
 	//"net"
+	"crypto/md5"
 	"flag"
 	"os"
 	"os/exec"
 	"os/user"
+	"strconv"
 	"strings"
+)
+
+const (
+	ChunkSize = 128 * 1024 * 1024
 )
 
 type TransferConfig struct {
@@ -132,6 +138,32 @@ func Transfer(config *TransferConfig) error {
 	return cmd.Run()
 }
 
+func Scp(user, addr, from, to string) error {
+	cmdStr := fmt.Sprintf("scp %s %s@%s:%s", from, user, addr, to)
+	cmd := exec.Command("/bin/sh", "-xc", cmdStr)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func ChunkedTransfer(config *TransferConfig) error {
+	// 1. Send IS command to the source host
+	err := Scp(config.SrcUser, config.SrcAddr, "./is", "/tmp/is")
+	if err != nil {
+		return err
+	}
+	// 2. Run create-catalog on the source host
+	// 3. Send IS comamnd to the destination host
+	err = Scp(config.DstUser, config.DstAddr, "./is", "/tmp/is")
+	if err != nil {
+		return err
+	}
+	// 4. Run create-catalog on the destination host
+	// 5. Take diff on user client and send (parallel) scp command(s) to the source host
+	// 6. Run patch-by-catalog on the destination host
+	return nil
+}
+
 type HostConfig struct {
 	User    string
 	Host    string
@@ -188,7 +220,7 @@ func GetFullLocation(hostAlias, relPath string, configs *HostConfigs) (user stri
 	return
 }
 
-func DoTransfer(argSrc, argDst string, configs *HostConfigs) error {
+func DoTransfer(argSrc, argDst string, configs *HostConfigs, chunked bool) error {
 	srcHost, src, err := SplitLocation(argSrc)
 	if err != nil {
 		return err
@@ -217,7 +249,11 @@ func DoTransfer(argSrc, argDst string, configs *HostConfigs) error {
 	transferConfig.DstPath = path
 	transferConfig.DstThrough = through
 
-	err = Transfer(transferConfig)
+	if chunked {
+		err = ChunkedTransfer(transferConfig)
+	} else {
+		err = Transfer(transferConfig)
+	}
 	if err != nil {
 		return err
 	}
@@ -225,10 +261,180 @@ func DoTransfer(argSrc, argDst string, configs *HostConfigs) error {
 	return nil
 }
 
+type Catalog struct {
+	Size     int
+	Metadata []ChunkMetadata
+}
+
+type ChunkMetadata struct {
+	Begin int // [begin, end)
+	End   int
+	Hash  string
+}
+
+func CreateCatalog(fileName string, expectedFileSize int) *Catalog {
+	if expectedFileSize != -1 {
+		info, err := os.Stat(fileName)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		actualFileSize := int(info.Size())
+
+		if expectedFileSize != actualFileSize {
+			rem := expectedFileSize
+			file, err := os.Create(fileName)
+			if err != nil {
+				log.Fatalln(err)
+			}
+
+			bytes := make([]byte, ChunkSize)
+			for rem > 0 {
+				cur := 0
+				if rem < ChunkSize {
+					cur = rem
+				} else {
+					cur = ChunkSize
+				}
+				n, err := file.Write(bytes[0:cur])
+				if err != nil {
+					log.Fatalln(err)
+					file.Close()
+				}
+				rem -= n
+			}
+			file.Close()
+		}
+	}
+
+	info, err := os.Stat(fileName)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	actualFileSize := int(info.Size())
+
+	file, err := os.Open(fileName)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer file.Close()
+
+	total := 0
+
+	catalog := Catalog{Size: actualFileSize}
+	catalog.Metadata = make([]ChunkMetadata, 0)
+
+	for total < actualFileSize {
+		bytes := make([]byte, ChunkSize)
+		n, _ := file.Read(bytes)
+
+		if n < ChunkSize && total != actualFileSize {
+			log.Fatalln("invalid state")
+		}
+
+		hash := fmt.Sprintf("%x", md5.Sum(bytes))
+		catalog.Metadata = append(catalog.Metadata, ChunkMetadata{Begin: total, End: total + n, Hash: hash})
+		total += n
+	}
+
+	return &catalog
+}
+
+func DoCreateCatalog() {
+	if flag.NArg() != 1 && flag.NArg() != 2 {
+		log.Fatalln("invalid number of arguments for create-catalog mode")
+	}
+
+	fileName := flag.Arg(0)
+	expectedFileSize := -1
+	if flag.NArg() == 2 {
+		var err error
+		expectedFileSize, err = strconv.Atoi(flag.Arg(1))
+		if err != nil {
+			log.Fatalln(err)
+		}
+	}
+
+	catalog := CreateCatalog(fileName, expectedFileSize)
+
+	marshaled, err := json.Marshal(catalog)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	fmt.Println(string(marshaled))
+}
+
+func DoPatchByCatalog() {
+	if flag.NArg() != 1 {
+		log.Fatalln("invalid number of arguments for patch-by-catalog mode")
+	}
+
+	readFromStdin, err := ioutil.ReadAll(os.Stdin)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	var expectedCatalog Catalog
+	err = json.Unmarshal(readFromStdin, &expectedCatalog)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	fileName := flag.Arg(0)
+	actualCatalog := CreateCatalog(fileName, -1)
+
+	if len(expectedCatalog.Metadata) != len(actualCatalog.Metadata) {
+		log.Fatalln("file size inconsistent")
+	}
+
+	metadataCount := len(expectedCatalog.Metadata)
+
+	file, err := os.Open(fileName)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer file.Close()
+
+	for i := 0; i < metadataCount; i++ {
+		if expectedCatalog.Metadata[i].Begin != actualCatalog.Metadata[i].Begin ||
+			expectedCatalog.Metadata[i].End != actualCatalog.Metadata[i].End {
+			log.Fatalln("chunk size inconsistent")
+		}
+
+		bytes, err := ioutil.ReadFile("/tmp/" + expectedCatalog.Metadata[i].Hash)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		n, err := file.WriteAt(bytes, int64(expectedCatalog.Metadata[i].Begin))
+		if err != nil {
+			log.Fatalln(err)
+		}
+		n = n
+		// TODO: check n != End - Begin + 1
+	}
+}
+
 func main() {
-	if len(flag.NArg()) != 2 {
+	flagChunked := flag.Bool("chunked", false, "do chunked transfer (experimental)")
+	flagCreateCatalog := flag.Bool("create-catalog", false, "internal use only")
+	flagPatchByCatalog := flag.Bool("patch-by-catalog", false, "internal use only")
+
+	flag.Parse()
+
+	if *flagCreateCatalog {
+		DoCreateCatalog()
+		return
+	}
+
+	if *flagPatchByCatalog {
+		DoPatchByCatalog()
+	}
+
+	if flag.NArg() != 2 {
 		fmt.Fprintln(os.Stderr,
-			`Usage: is srcHost:src dstHost:dst
+			`Usage: is [options] srcHost:src dstHost:dst
+Options: 
+	--chunked=false: do chunked transfer (experimental)
 
 You have to define host configuration in ~/.isrc like this:
 {
@@ -250,7 +456,7 @@ You have to define host configuration in ~/.isrc like this:
 
 	configs := GetHostConfigs()
 
-	err := DoTransfer(flag.Args()[0], flag.Args()[1], configs)
+	err := DoTransfer(flag.Args()[0], flag.Args()[1], configs, *flagChunked)
 	if err != nil {
 		log.Fatalln(err)
 	}
